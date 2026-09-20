@@ -83,6 +83,7 @@
 
         <div class="mb-8 p-4 md:p-6 bg-gray-50 rounded-lg border border-gray-200">
             <h2 class="text-xl font-semibold mb-4 text-gray-700">1. 上傳 Excel 檔案</h2>
+            <p class="text-sm text-gray-500 mb-4">系統會自動排除同一天、同一電話的重複金額計算。</p>
             
             <div class="flex flex-col sm:flex-row sm:items-center gap-4">
                 <label for="file-upload" class="custom-file-upload shadow-sm hover:shadow text-center">
@@ -120,7 +121,7 @@
                     <div class="mt-2 text-sm text-gray-600">
                         <span class="inline-flex items-center mr-4"><span class="w-3 h-3 rounded-full bg-red-100 border border-red-300 mr-1"></span> ≥ 300,000</span>
                         <span class="inline-flex items-center mr-4"><span class="w-3 h-3 rounded-full bg-yellow-100 border border-yellow-300 mr-1"></span> 200,000 - 299,999</span>
-                        <span id="summary-info" class="font-medium ml-4"></span>
+                        <span id="summary-info" class="font-medium ml-4 block mt-2 sm:mt-0 sm:inline"></span>
                     </div>
                 </div>
                 <button id="export-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-md shadow transition duration-200 flex items-center gap-2">
@@ -145,7 +146,7 @@
                                 累加金額
                             </th>
                             <th class="px-5 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                                筆數
+                                交易天數
                             </th>
                         </tr>
                     </thead>
@@ -159,16 +160,15 @@
 
     <script>
         // 設定欄位索引 (0-based)
-        // 根據您提供的圖片 "1000038298.png"，假設:
-        // A=0(名稱), B=1(電話), C=2(日期?), ..., H=7(金額?)
-        // 若實際狀況不同，請修改這裡的數字
+        // 根據圖片 "1000038378.png":
+        // A=0(顧客姓名), B=1(電話), C=2(銷貨日期), D=3(倉別), E=4(品名), F=5(數量), G=6(贈送量), H=7(保證金)
         const PHONE_COL_INDEX = 1; // B欄
+        const DATE_COL_INDEX = 2;  // C欄 (用於判斷是否同一天)
         const AMOUNT_COL_INDEX = 7; // H欄
         
         // 讀取資料的起始列 (跳過標題列)
-        // 圖片中看起來標題可能有合併儲存格，資料似乎是從第4或第5列開始
-        // 安全起見，我們讀取全部列並過濾無效資料
-        const DATA_START_ROW = 2; // 假設資料從第3列(index 2)開始
+        // 圖片中資料從第3列(index 2)開始
+        const DATA_START_ROW = 2; 
 
         const fileInput = document.getElementById('file-upload');
         const fileCountSpan = document.getElementById('file-count');
@@ -194,6 +194,14 @@
         function cleanPhone(phone) {
             if (phone === undefined || phone === null) return '';
             return String(phone).replace(/[^0-9]/g, '');
+        }
+
+        // 格式化日期字串為統一格式 (避免 YYYY/MM/DD 和 YYYY-MM-DD 視為不同)
+        function cleanDate(dateStr) {
+             if (dateStr === undefined || dateStr === null) return '';
+             // 如果 Excel 讀出來是數字 (Excel 的日期格式)，SheetJS 預設會轉成原字串，
+             // 為了保險起見，我們統一轉字串並將所有 '/' 換成 '-' 來標準化
+             return String(dateStr).trim().replace(/\//g, '-');
         }
 
         // 解析金額字串為數字
@@ -276,8 +284,7 @@
                 }
             });
 
-            // 每次選擇後清空 input 的 value，這樣即使下次選同一個檔案(如果是不同路徑同檔名)也能觸發 change 事件
-            // 更重要的是讓手機端每次點擊都能順利開啟檔案選擇器
+            // 每次選擇後清空 input 的 value，這樣即使下次選同一個檔案也能觸發 change 事件
             e.target.value = ''; 
             
             updateFileListUI();
@@ -292,13 +299,15 @@
             loadingIndicator.classList.remove('hidden');
             resultsContainer.classList.add('hidden');
 
-            const phoneDataMap = new Map(); // key: phone, value: { amount: sum, count: items }
-            let totalProcessedRows = 0;
+            const phoneDataMap = new Map(); // key: phone, value: { amount: sum, daysCount: number }
+            const processedTransactions = new Set(); // 記錄已處理過的 "電話_日期" 組合
+            
+            let totalValidTransactions = 0; // 記錄有效的、不重複的交易筆數
 
             try {
                 for (const file of allSelectedFiles) {
-                    await processExcelFile(file, phoneDataMap, (rowCount) => {
-                        totalProcessedRows += rowCount;
+                    await processExcelFile(file, phoneDataMap, processedTransactions, (transactionCount) => {
+                        totalValidTransactions += transactionCount;
                     });
                 }
 
@@ -306,13 +315,13 @@
                 finalProcessedData = Array.from(phoneDataMap.entries()).map(([phone, data]) => ({
                     phone: phone,
                     totalAmount: data.amount,
-                    recordCount: data.count
+                    daysCount: data.daysCount // 這裡我們算他來了幾天
                 }));
 
                 // 由金額大到小排序
                 finalProcessedData.sort((a, b) => b.totalAmount - a.totalAmount);
 
-                renderResults(finalProcessedData, totalProcessedRows);
+                renderResults(finalProcessedData, totalValidTransactions);
 
             } catch (error) {
                 console.error("處理檔案時發生錯誤:", error);
@@ -326,7 +335,7 @@
         });
 
         // 讀取單個 Excel 檔案
-        function processExcelFile(file, dataMap, onComplete) {
+        function processExcelFile(file, dataMap, processedTransactions, onComplete) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = (e) => {
@@ -339,37 +348,52 @@
                         const worksheet = workbook.Sheets[firstSheetName];
                         
                         // 將工作表轉換為陣列，設定 header 為 1 代表回傳二維陣列
-                        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null });
+                        // raw: false 會嘗試讓 sheetjs 輸出格式化後的文字 (例如把 Excel 日期轉成字串)
+                        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null, raw: false });
                         
-                        let rowCount = 0;
+                        let transactionCount = 0;
                         
                         // 從指定的起始列開始讀取
                         for (let i = DATA_START_ROW; i < jsonData.length; i++) {
                             const row = jsonData[i];
                             
-                            // 這裡放寬條件，只要有值就嘗試解析，因為有些表格可能後面欄位是空的
                             if (row && row.length > 0) {
-                                const rawPhone = row[PHONE_COL_INDEX];
-                                const rawAmount = row[AMOUNT_COL_INDEX];
+                                const rawPhone = row[PHONE_COL_INDEX]; // B欄
+                                const rawDate = row[DATE_COL_INDEX];   // C欄
+                                const rawAmount = row[AMOUNT_COL_INDEX]; // H欄
                                 
                                 const phone = cleanPhone(rawPhone);
+                                const date = cleanDate(rawDate);
                                 const amount = parseAmount(rawAmount);
 
-                                // 只有當電話有值且金額大於0時才處理
-                                if (phone && amount > 0) {
-                                    if (dataMap.has(phone)) {
-                                        const currentData = dataMap.get(phone);
-                                        currentData.amount += amount;
-                                        currentData.count += 1;
-                                    } else {
-                                        dataMap.set(phone, { amount: amount, count: 1 });
+                                /* 
+                                 * 避免重複計算邏輯：
+                                 * 1. 必須要有電話且金額大於 0。
+                                 * 2. 由於同一個人的某一筆交易可能被拆成多列，
+                                 *    我們建立一個唯一的 key: "電話_日期"。
+                                 * 3. 如果這個 key 還沒有被處理過，我們才把金額加進去。
+                                 */
+                                if (phone && date && amount > 0) {
+                                    const transactionKey = `${phone}_${date}`;
+                                    
+                                    // 檢查這筆「同天同人」的交易是否已經計算過
+                                    if (!processedTransactions.has(transactionKey)) {
+                                        processedTransactions.add(transactionKey);
+                                        
+                                        if (dataMap.has(phone)) {
+                                            const currentData = dataMap.get(phone);
+                                            currentData.amount += amount;
+                                            currentData.daysCount += 1;
+                                        } else {
+                                            dataMap.set(phone, { amount: amount, daysCount: 1 });
+                                        }
+                                        transactionCount++;
                                     }
-                                    rowCount++;
                                 }
                             }
                         }
                         
-                        onComplete(rowCount);
+                        onComplete(transactionCount);
                         resolve();
                     } catch (error) {
                         reject(error);
@@ -380,11 +404,11 @@
             });
         }
 
-        function renderResults(data, totalOriginalRows) {
+        function renderResults(data, totalTransactions) {
             resultTableBody.innerHTML = '';
             
             if (data.length === 0) {
-                resultTableBody.innerHTML = `<tr><td colspan="4" class="px-5 py-5 border-b border-gray-200 bg-white text-sm text-center text-gray-500">沒有找到符合條件的資料，請確認欄位對應是否正確 (預設: B欄電話, H欄金額)。</td></tr>`;
+                resultTableBody.innerHTML = `<tr><td colspan="4" class="px-5 py-5 border-b border-gray-200 bg-white text-sm text-center text-gray-500">沒有找到符合條件的資料，請確認欄位對應是否正確。</td></tr>`;
                 summaryInfo.textContent = '';
                 resultsContainer.classList.remove('hidden');
                 exportBtn.disabled = true;
@@ -418,7 +442,7 @@
                             <p class="${item.totalAmount >= 200000 ? 'font-bold' : ''} text-gray-900 whitespace-no-wrap">${formatCurrency(item.totalAmount)}</p>
                         </td>
                         <td class="px-5 py-4 border-b border-gray-200 text-sm">
-                            <p class="text-gray-600 whitespace-no-wrap">${item.recordCount} 筆</p>
+                            <p class="text-gray-600 whitespace-no-wrap">${item.daysCount} 天</p>
                         </td>
                     </tr>
                 `;
@@ -427,7 +451,7 @@
             resultTableBody.innerHTML = html;
             
             // 更新摘要資訊
-            summaryInfo.innerHTML = `總計整合了 <b>${totalOriginalRows}</b> 筆明細，合併為 <b>${data.length}</b> 個不同電話。 (30萬以上: ${over300kCount}位, 20-30萬: ${over200kCount}位)`;
+            summaryInfo.innerHTML = `過濾重複列後，共計 <b>${totalTransactions}</b> 筆獨立交易紀錄，合併為 <b>${data.length}</b> 個不同電話。 (30萬以上: ${over300kCount}位, 20-30萬: ${over200kCount}位)`;
             
             resultsContainer.classList.remove('hidden');
             exportBtn.disabled = false;
@@ -441,22 +465,18 @@
                 '排名': index + 1,
                 '會員電話': item.phone,
                 '累加總金額': item.totalAmount,
-                '合併筆數': item.recordCount
+                '交易天數': item.daysCount
             }));
 
             // 建立工作表
             const ws = XLSX.utils.json_to_sheet(exportData);
-
-            // 嘗試設定樣式 (注意：免費版的 SheetJS 對於單元格樣式匯出的支援有限)
-            // 這裡主要匯出數據，若需要嚴格的Excel內建顏色背景，通常需要 sheetjs-style 或付費版
-            // 但我們依然把資料匯出，讓使用者可以在 Excel 輕易設定條件格式化
             
             // 設定欄寬
             const wscols = [
                 {wch: 8},  // 排名
                 {wch: 15}, // 電話
                 {wch: 15}, // 金額
-                {wch: 10}  // 筆數
+                {wch: 10}  // 筆數/天數
             ];
             ws['!cols'] = wscols;
 
