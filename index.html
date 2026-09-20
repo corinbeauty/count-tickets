@@ -82,7 +82,23 @@
         <h1 class="text-2xl md:text-3xl font-bold text-gray-800 mb-6 text-center border-b pb-4">會員票券系統</h1>
 
         <div class="mb-8 p-4 md:p-6 bg-gray-50 rounded-lg border border-gray-200">
-            <h2 class="text-xl font-semibold mb-4 text-gray-700">1. 上傳 Excel 檔案</h2>
+            <h2 class="text-xl font-semibold mb-4 text-gray-700">1. 基本設定與上傳</h2>
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">店鋪名稱 (選填)</label>
+                    <input type="text" id="store-name" placeholder="例如：中清行館" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">資料起始時間 (選填)</label>
+                    <input type="date" id="start-date" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">資料結束時間 (選填)</label>
+                    <input type="date" id="end-date" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500">
+                </div>
+            </div>
+
             <p class="text-sm text-gray-500 mb-4">系統會自動排除同一天、同一電話的重複金額計算。</p>
             
             <div class="flex flex-col sm:flex-row sm:items-center gap-4">
@@ -188,6 +204,16 @@
         // 改用 File 物件的陣列來儲存所有累加的檔案
         let allSelectedFiles = []; 
         let finalProcessedData = [];
+        
+        // 儲存統計結果，供匯出 Excel 使用
+        let exportSummaryStats = {
+            totalOriginalRows: 0,
+            deletedRows: 0,
+            totalTransactions: 0,
+            memberCount: 0,
+            over300kCount: 0,
+            over200kCount: 0
+        };
 
         // 格式化金額
         function formatCurrency(num) {
@@ -468,6 +494,17 @@
             
             // 更新摘要資訊
             const deletedRows = totalOriginalRows - totalTransactions;
+            
+            // 記錄到全域變數中，供匯出 Excel 時使用
+            exportSummaryStats = {
+                totalOriginalRows: totalOriginalRows,
+                deletedRows: deletedRows,
+                totalTransactions: totalTransactions,
+                memberCount: data.length,
+                over300kCount: over300kCount,
+                over200kCount: over200kCount
+            };
+
             summaryInfo.innerHTML = `
                 <div class="mt-2 text-gray-700 space-y-1">
                     <p>原有資料共 <b>${totalOriginalRows}</b> 筆，自動刪除同天重複 <b>${deletedRows}</b> 筆，剩餘 <b>${totalTransactions}</b> 筆獨立交易。</p>
@@ -482,25 +519,63 @@
         exportBtn.addEventListener('click', () => {
             if (!finalProcessedData || finalProcessedData.length === 0) return;
 
-            // 準備匯出的資料結構
-            const exportData = finalProcessedData.map((item, index) => ({
-                '排名': index + 1,
-                '顧客姓名': item.name || '',
-                '會員電話': item.phone,
-                '累加總金額': item.totalAmount,
-                '交易筆數': item.daysCount
-            }));
+            // 取得使用者輸入的店名與日期
+            const storeName = document.getElementById('store-name').value.trim() || '未命名店鋪';
+            let startDate = document.getElementById('start-date').value;
+            let endDate = document.getElementById('end-date').value;
+            const dateRangeStr = (startDate || endDate) ? `${startDate || '?'} ~ ${endDate || '?'}` : '未指定';
+
+            // 準備匯出的陣列資料 (AOA: Array of Arrays)
+            const exportDataAOA = [];
+            
+            // --- 寫入 Excel 表頭資訊 ---
+            // 第 1 列：店鋪與標題
+            exportDataAOA.push([`${storeName} - 會員加總排行資料`]);
+            
+            // 第 2 列：時間區間
+            exportDataAOA.push([`資料時間區間：${dateRangeStr}`]);
+            
+            // 第 3 列：統計摘要 1
+            exportDataAOA.push([`原有資料共 ${exportSummaryStats.totalOriginalRows} 筆，自動刪除同天重複 ${exportSummaryStats.deletedRows} 筆，剩餘 ${exportSummaryStats.totalTransactions} 筆獨立交易。`]);
+            
+            // 第 4 列：統計摘要 2
+            exportDataAOA.push([`合併後共計 ${exportSummaryStats.memberCount} 位會員。(30萬以上: ${exportSummaryStats.over300kCount} 位, 20-30萬: ${exportSummaryStats.over200kCount} 位)`]);
+            
+            // 第 5 列：空白列分隔
+            exportDataAOA.push([]);
+            
+            // 第 6 列：欄位名稱
+            exportDataAOA.push(['排名', '顧客姓名', '會員電話', '累加總金額', '交易筆數']);
+
+            // 第 7 列開始：資料內容
+            finalProcessedData.forEach((item, index) => {
+                exportDataAOA.push([
+                    index + 1,
+                    item.name || '',
+                    item.phone,
+                    item.totalAmount,
+                    item.daysCount
+                ]);
+            });
 
             // 建立工作表
-            const ws = XLSX.utils.json_to_sheet(exportData);
+            const ws = XLSX.utils.aoa_to_sheet(exportDataAOA);
+            
+            // 合併表頭儲存格 (讓文字跨越 A 到 E 欄)
+            ws['!merges'] = [
+                { s: { r: 0, c: 0 }, e: { r: 0, c: 4 } }, // 第 1 列合併
+                { s: { r: 1, c: 0 }, e: { r: 1, c: 4 } }, // 第 2 列合併
+                { s: { r: 2, c: 0 }, e: { r: 2, c: 4 } }, // 第 3 列合併
+                { s: { r: 3, c: 0 }, e: { r: 3, c: 4 } }  // 第 4 列合併
+            ];
             
             // 設定欄寬
             const wscols = [
-                {wch: 8},  // 排名
-                {wch: 15}, // 姓名
-                {wch: 15}, // 電話
-                {wch: 15}, // 金額
-                {wch: 10}  // 筆數
+                {wch: 8},  // A欄: 排名
+                {wch: 15}, // B欄: 姓名
+                {wch: 15}, // C欄: 電話
+                {wch: 15}, // D欄: 金額
+                {wch: 10}  // E欄: 筆數
             ];
             ws['!cols'] = wscols;
 
@@ -508,9 +583,10 @@
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, "會員加總資料");
 
-            // 產生檔案並下載
+            // 產生檔案並下載 (檔名自動加上店名)
             const dateStr = new Date().toISOString().slice(0,10).replace(/-/g,"");
-            const fileName = `會員票券系統_金額加總排序_${dateStr}.xlsx`;
+            const safeStoreName = storeName.replace(/[/\\?%*:|"<>]/g, '-'); // 避免檔名出現不合法字元
+            const fileName = `${safeStoreName}_會員金額排序_${dateStr}.xlsx`;
             
             XLSX.writeFile(wb, fileName);
         });
