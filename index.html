@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>會員票券系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* bg-gray-100 */
+        }
+        /* 隱藏預設的檔案上傳按鈕，使用自訂樣式 */
+        input[type="file"] {
+            display: none;
+        }
+        .custom-file-upload {
+            border: 1px solid #ccc;
+            display: inline-block;
+            padding: 6px 12px;
+            cursor: pointer;
+            background-color: #ffffff;
+            border-radius: 0.375rem; /* rounded-md */
+            transition: all 0.3s;
+        }
+        .custom-file-upload:hover {
+            background-color: #f9fafb; /* bg-gray-50 */
+        }
+        
+        /* 表格樣式調整 */
+        th, td {
+            border: 1px solid #e5e7eb;
+        }
+        th {
+            background-color: #f9fafb;
+        }
+        
+        /* 載入動畫 */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 4px solid #3498db;
+            width: 30px;
+            height: 30px;
+            -webkit-animation: spin 1s linear infinite; /* Safari */
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .file-list-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background-color: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+        .remove-file-btn {
+            color: #ef4444;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+        .remove-file-btn:hover {
+            background-color: #fee2e2;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-6">
+
+    <div class="max-w-6xl mx-auto bg-white rounded-lg shadow-md p-4 md:p-8">
+        <h1 class="text-2xl md:text-3xl font-bold text-gray-800 mb-6 text-center border-b pb-4">會員票券系統</h1>
+
+        <div class="mb-8 p-4 md:p-6 bg-gray-50 rounded-lg border border-gray-200">
+            <h2 class="text-xl font-semibold mb-4 text-gray-700">1. 上傳 Excel 檔案</h2>
+            <p class="text-sm text-gray-500 mb-4">系統會自動排除同一天、同一電話的重複金額計算。</p>
+            
+            <div class="flex flex-col sm:flex-row sm:items-center gap-4">
+                <label for="file-upload" class="custom-file-upload shadow-sm hover:shadow text-center">
+                    <span class="flex justify-center items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                        </svg>
+                        新增 Excel 檔案
+                    </span>
+                </label>
+                <!-- 移除了 multiple 屬性，依靠 JS 累加 -->
+                <input id="file-upload" type="file" accept=".xlsx, .xls, .csv" />
+                <span id="file-count" class="text-gray-600 font-medium">尚未選擇檔案</span>
+            </div>
+            
+            <div id="file-list" class="mt-4 text-sm text-gray-600 max-h-48 overflow-y-auto"></div>
+            
+            <div class="mt-6 flex flex-wrap gap-4">
+                <button id="process-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-md shadow transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center w-full sm:w-auto justify-center" disabled>
+                    開始處理
+                </button>
+                <button id="clear-all-btn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-6 rounded-md shadow transition duration-200 flex items-center w-full sm:w-auto justify-center hidden">
+                    清空檔案清單
+                </button>
+                <div id="loading-indicator" class="hidden text-blue-600 flex items-center justify-center w-full sm:w-auto">
+                    <div class="loader"></div> 處理中，請稍候...
+                </div>
+            </div>
+        </div>
+
+        <div id="results-container" class="hidden">
+            <div class="flex justify-between items-end mb-4 border-b pb-2">
+                <div>
+                    <h2 class="text-2xl font-semibold text-gray-800">處理結果</h2>
+                    <div class="mt-2 text-sm text-gray-600">
+                        <span class="inline-flex items-center mr-4"><span class="w-3 h-3 rounded-full bg-red-100 border border-red-300 mr-1"></span> ≥ 300,000</span>
+                        <span class="inline-flex items-center mr-4"><span class="w-3 h-3 rounded-full bg-yellow-100 border border-yellow-300 mr-1"></span> 200,000 - 299,999</span>
+                        <span id="summary-info" class="font-medium ml-4 block mt-2 sm:mt-0 sm:inline"></span>
+                    </div>
+                </div>
+                <button id="export-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-md shadow transition duration-200 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    匯出 Excel
+                </button>
+            </div>
+
+            <div class="overflow-x-auto bg-white rounded-lg shadow border border-gray-200 max-h-[500px]">
+                <table class="min-w-full leading-normal table-auto">
+                    <thead class="sticky top-0 bg-gray-50 shadow-sm z-10">
+                        <tr>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-16">
+                                排名
+                            </th>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                姓名
+                            </th>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                電話
+                            </th>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                累加金額
+                            </th>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                交易筆數
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody id="result-table-body">
+                        <!-- 結果列將動態插入此處 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 設定欄位索引 (0-based)
+        // 根據圖片 "1000038378.png":
+        // A=0(顧客姓名), B=1(電話), C=2(銷貨日期), D=3(倉別), E=4(品名), F=5(數量), G=6(贈送量), H=7(保證金)
+        const NAME_COL_INDEX = 0;  // A欄 (新增姓名變數)
+        const PHONE_COL_INDEX = 1; // B欄
+        const DATE_COL_INDEX = 2;  // C欄 (用於判斷是否同一天)
+        const AMOUNT_COL_INDEX = 7; // H欄
+        
+        // 讀取資料的起始列 (跳過標題列)
+        // 圖片中資料從第3列(index 2)開始
+        const DATA_START_ROW = 2; 
+
+        const fileInput = document.getElementById('file-upload');
+        const fileCountSpan = document.getElementById('file-count');
+        const fileListDiv = document.getElementById('file-list');
+        const processBtn = document.getElementById('process-btn');
+        const clearAllBtn = document.getElementById('clear-all-btn');
+        const exportBtn = document.getElementById('export-btn');
+        const resultsContainer = document.getElementById('results-container');
+        const resultTableBody = document.getElementById('result-table-body');
+        const summaryInfo = document.getElementById('summary-info');
+        const loadingIndicator = document.getElementById('loading-indicator');
+
+        // 改用 File 物件的陣列來儲存所有累加的檔案
+        let allSelectedFiles = []; 
+        let finalProcessedData = [];
+
+        // 格式化金額
+        function formatCurrency(num) {
+            return new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', minimumFractionDigits: 0 }).format(num);
+        }
+
+        // 清理電話字串 (移除空格、特殊字元等)
+        function cleanPhone(phone) {
+            if (phone === undefined || phone === null) return '';
+            return String(phone).replace(/[^0-9]/g, '');
+        }
+
+        // 格式化日期字串為統一格式 (避免 YYYY/MM/DD 和 YYYY-MM-DD 視為不同)
+        function cleanDate(dateStr) {
+             if (dateStr === undefined || dateStr === null) return '';
+             // 如果 Excel 讀出來是數字 (Excel 的日期格式)，SheetJS 預設會轉成原字串，
+             // 為了保險起見，我們統一轉字串並將所有 '/' 換成 '-' 來標準化
+             return String(dateStr).trim().replace(/\//g, '-');
+        }
+
+        // 解析金額字串為數字
+        function parseAmount(amountStr) {
+            if (amountStr === undefined || amountStr === null) return 0;
+            if (typeof amountStr === 'number') return amountStr;
+            // 移除錢號、逗號等
+            const cleanedStr = String(amountStr).replace(/[^0-9.-]+/g, "");
+            const val = parseFloat(cleanedStr);
+            return isNaN(val) ? 0 : val;
+        }
+
+        // 更新檔案清單 UI
+        function updateFileListUI() {
+            if (allSelectedFiles.length === 0) {
+                fileCountSpan.textContent = "尚未選擇檔案";
+                fileListDiv.innerHTML = '';
+                processBtn.disabled = true;
+                clearAllBtn.classList.add('hidden');
+                return;
+            }
+
+            fileCountSpan.textContent = `待處理共 ${allSelectedFiles.length} 個檔案`;
+            
+            let listHtml = '<div class="space-y-2 mt-2">';
+            allSelectedFiles.forEach((file, index) => {
+                listHtml += `
+                    <div class="file-list-item">
+                        <div class="flex items-center gap-2 overflow-hidden">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-green-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span class="truncate" title="${file.name}">${file.name}</span>
+                            <span class="text-xs text-gray-400 flex-shrink-0">(${(file.size / 1024).toFixed(1)} KB)</span>
+                        </div>
+                        <button onclick="removeFile(${index})" class="remove-file-btn" title="移除此檔案">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </div>
+                `;
+            });
+            listHtml += '</div>';
+            fileListDiv.innerHTML = listHtml;
+
+            processBtn.disabled = false;
+            clearAllBtn.classList.remove('hidden');
+            resultsContainer.classList.add('hidden'); // 選擇新檔案時隱藏舊結果
+        }
+
+        // 移除特定檔案
+        window.removeFile = function(index) {
+            allSelectedFiles.splice(index, 1);
+            updateFileListUI();
+        };
+
+        // 清空所有檔案
+        clearAllBtn.addEventListener('click', () => {
+            allSelectedFiles = [];
+            fileInput.value = ''; // 重置 input
+            updateFileListUI();
+        });
+
+        // 監聽檔案選擇改變
+        fileInput.addEventListener('change', (e) => {
+            const newFiles = Array.from(e.target.files);
+            if (newFiles.length === 0) return;
+
+            // 檢查重複檔案 (以檔名和大小作為簡單判斷)
+            newFiles.forEach(newFile => {
+                const isDuplicate = allSelectedFiles.some(existingFile => 
+                    existingFile.name === newFile.name && existingFile.size === newFile.size
+                );
+                
+                if (!isDuplicate) {
+                    allSelectedFiles.push(newFile);
+                } else {
+                    console.log(`檔案 ${newFile.name} 已在清單中`);
+                }
+            });
+
+            // 每次選擇後清空 input 的 value，這樣即使下次選同一個檔案也能觸發 change 事件
+            e.target.value = ''; 
+            
+            updateFileListUI();
+        });
+
+        processBtn.addEventListener('click', async () => {
+            if (allSelectedFiles.length === 0) return;
+
+            processBtn.disabled = true;
+            processBtn.classList.add('hidden');
+            clearAllBtn.classList.add('hidden');
+            loadingIndicator.classList.remove('hidden');
+            resultsContainer.classList.add('hidden');
+
+            const phoneDataMap = new Map(); // key: phone, value: { name: name, amount: sum, daysCount: number }
+            const processedTransactions = new Set(); // 記錄已處理過的 "電話_日期" 組合
+            
+            let totalValidTransactions = 0; // 記錄有效的、不重複的交易筆數
+            let totalOriginalRows = 0;      // 新增：記錄原始有讀取到的資料總筆數
+
+            try {
+                for (const file of allSelectedFiles) {
+                    await processExcelFile(file, phoneDataMap, processedTransactions, (validCount, originalCount) => {
+                        totalValidTransactions += validCount;
+                        totalOriginalRows += originalCount;
+                    });
+                }
+
+                // 轉換為陣列並排序
+                finalProcessedData = Array.from(phoneDataMap.entries()).map(([phone, data]) => ({
+                    name: data.name,
+                    phone: phone,
+                    totalAmount: data.amount,
+                    daysCount: data.daysCount
+                }));
+
+                // 由金額大到小排序
+                finalProcessedData.sort((a, b) => b.totalAmount - a.totalAmount);
+
+                renderResults(finalProcessedData, totalValidTransactions, totalOriginalRows);
+
+            } catch (error) {
+                console.error("處理檔案時發生錯誤:", error);
+                alert("處理檔案時發生錯誤，請檢查檔案格式是否正確。\n錯誤訊息: " + error.message);
+            } finally {
+                processBtn.disabled = false;
+                processBtn.classList.remove('hidden');
+                clearAllBtn.classList.remove('hidden');
+                loadingIndicator.classList.add('hidden');
+            }
+        });
+
+        // 讀取單個 Excel 檔案
+        function processExcelFile(file, dataMap, processedTransactions, onComplete) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = new Uint8Array(e.target.result);
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        
+                        // 假設只讀取第一個工作表
+                        const firstSheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[firstSheetName];
+                        
+                        // 將工作表轉換為陣列，設定 header 為 1 代表回傳二維陣列
+                        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null, raw: false });
+                        
+                        let validCount = 0;
+                        let originalCount = 0;
+                        
+                        // 從指定的起始列開始讀取
+                        for (let i = DATA_START_ROW; i < jsonData.length; i++) {
+                            const row = jsonData[i];
+                            
+                            if (row && row.length > 0) {
+                                const rawName = row[NAME_COL_INDEX];   // A欄
+                                const rawPhone = row[PHONE_COL_INDEX]; // B欄
+                                const rawDate = row[DATE_COL_INDEX];   // C欄
+                                const rawAmount = row[AMOUNT_COL_INDEX]; // H欄
+                                
+                                const name = rawName ? String(rawName).trim() : '';
+                                const phone = cleanPhone(rawPhone);
+                                const date = cleanDate(rawDate);
+                                const amount = parseAmount(rawAmount);
+
+                                /* 
+                                 * 避免重複計算邏輯：
+                                 * 1. 使用 "電話_日期" 作為唯一 key。
+                                 * 2. 如果該 key 已存在，代表是同一天同一人的重複列（如商品明細），則略過。
+                                 */
+                                if (phone && date && amount > 0) {
+                                    originalCount++; // 只要有電話、日期和金額，就算是原始資料的一筆
+
+                                    const transactionKey = `${phone}_${date}`;
+                                    
+                                    // 檢查這筆「同天同人」的交易是否已經計算過
+                                    if (!processedTransactions.has(transactionKey)) {
+                                        processedTransactions.add(transactionKey);
+                                        
+                                        if (dataMap.has(phone)) {
+                                            const currentData = dataMap.get(phone);
+                                            currentData.amount += amount;
+                                            currentData.daysCount += 1;
+                                            // 如果之前沒抓到姓名，現在抓到了就補上
+                                            if (!currentData.name && name) {
+                                                currentData.name = name;
+                                            }
+                                        } else {
+                                            dataMap.set(phone, { name: name, amount: amount, daysCount: 1 });
+                                        }
+                                        validCount++;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        onComplete(validCount, originalCount);
+                        resolve();
+                    } catch (error) {
+                        reject(error);
+                    }
+                };
+                reader.onerror = (error) => reject(error);
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        function renderResults(data, totalTransactions, totalOriginalRows) {
+            resultTableBody.innerHTML = '';
+            
+            if (data.length === 0) {
+                resultTableBody.innerHTML = `<tr><td colspan="5" class="px-5 py-5 border-b border-gray-200 bg-white text-sm text-center text-gray-500">沒有找到符合條件的資料，請確認欄位對應是否正確。</td></tr>`;
+                summaryInfo.textContent = '';
+                resultsContainer.classList.remove('hidden');
+                exportBtn.disabled = true;
+                return;
+            }
+
+            let html = '';
+            let over300kCount = 0;
+            let over200kCount = 0;
+
+            data.forEach((item, index) => {
+                // 判斷顏色標記條件
+                let rowBgClass = 'bg-white hover:bg-gray-50'; // 預設
+                if (item.totalAmount >= 300000) {
+                    rowBgClass = 'bg-red-50 hover:bg-red-100'; // 30萬以上紅底 (淺紅)
+                    over300kCount++;
+                } else if (item.totalAmount >= 200000 && item.totalAmount < 300000) {
+                    rowBgClass = 'bg-yellow-50 hover:bg-yellow-100'; // 20-30萬黃底 (淺黃)
+                    over200kCount++;
+                }
+
+                html += `
+                    <tr class="${rowBgClass} transition duration-150">
+                        <td class="px-5 py-4 border-b border-gray-200 text-sm">
+                            <p class="text-gray-900 whitespace-no-wrap">${index + 1}</p>
+                        </td>
+                        <td class="px-5 py-4 border-b border-gray-200 text-sm font-medium">
+                            <p class="text-gray-900 whitespace-no-wrap">${item.name || ''}</p>
+                        </td>
+                        <td class="px-5 py-4 border-b border-gray-200 text-sm font-medium">
+                            <p class="text-gray-900 whitespace-no-wrap">${item.phone}</p>
+                        </td>
+                        <td class="px-5 py-4 border-b border-gray-200 text-sm text-right">
+                            <p class="${item.totalAmount >= 200000 ? 'font-bold' : ''} text-gray-900 whitespace-no-wrap">${formatCurrency(item.totalAmount)}</p>
+                        </td>
+                        <td class="px-5 py-4 border-b border-gray-200 text-sm">
+                            <p class="text-gray-600 whitespace-no-wrap">${item.daysCount} 筆</p>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            resultTableBody.innerHTML = html;
+            
+            // 更新摘要資訊
+            const deletedRows = totalOriginalRows - totalTransactions;
+            summaryInfo.innerHTML = `
+                <div class="mt-2 text-gray-700 space-y-1">
+                    <p>原有資料共 <b>${totalOriginalRows}</b> 筆，自動刪除同天重複 <b>${deletedRows}</b> 筆，剩餘 <b>${totalTransactions}</b> 筆獨立交易。</p>
+                    <p>合併後共計 <b>${data.length}</b> 位會員。 (30萬以上: <span class="text-red-600 font-bold">${over300kCount}</span> 位, 20-30萬: <span class="text-yellow-600 font-bold">${over200kCount}</span> 位)</p>
+                </div>
+            `;
+            
+            resultsContainer.classList.remove('hidden');
+            exportBtn.disabled = false;
+        }
+
+        exportBtn.addEventListener('click', () => {
+            if (!finalProcessedData || finalProcessedData.length === 0) return;
+
+            // 準備匯出的資料結構
+            const exportData = finalProcessedData.map((item, index) => ({
+                '排名': index + 1,
+                '顧客姓名': item.name || '',
+                '會員電話': item.phone,
+                '累加總金額': item.totalAmount,
+                '交易筆數': item.daysCount
+            }));
+
+            // 建立工作表
+            const ws = XLSX.utils.json_to_sheet(exportData);
+            
+            // 設定欄寬
+            const wscols = [
+                {wch: 8},  // 排名
+                {wch: 15}, // 姓名
+                {wch: 15}, // 電話
+                {wch: 15}, // 金額
+                {wch: 10}  // 筆數
+            ];
+            ws['!cols'] = wscols;
+
+            // 建立工作簿並加入工作表
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "會員加總資料");
+
+            // 產生檔案並下載
+            const dateStr = new Date().toISOString().slice(0,10).replace(/-/g,"");
+            const fileName = `會員票券系統_金額加總排序_${dateStr}.xlsx`;
+            
+            XLSX.writeFile(wb, fileName);
+        });
+    </script>
+</body>
+</html>
