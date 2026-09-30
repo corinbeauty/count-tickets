@@ -23,7 +23,7 @@
     <div class="max-w-7xl mx-auto bg-white rounded-xl shadow-md overflow-hidden">
         <div class="bg-blue-600 p-4 text-white text-center">
             <h1 class="text-2xl font-bold">庫存換算與盤點比對系統</h1>
-            <p class="text-sm mt-1">上傳採購表與前台銷售表，自動計算理論庫存並供現場核對</p>
+            <p class="text-sm mt-1">上傳採購表與前台銷售表，自動模糊比對品名、計算理論庫存並供現場核對</p>
         </div>
 
         <div class="p-6">
@@ -81,10 +81,10 @@
                     <table class="min-w-full divide-y divide-gray-200 text-sm" id="resultTable">
                         <thead class="bg-gray-50">
                             <tr>
-                                <th scope="col" class="px-3 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">代碼/料號</th>
-                                <th scope="col" class="px-3 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">商品名稱</th>
+                                <th scope="col" class="px-3 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">代碼/料號 (若有)</th>
+                                <th scope="col" class="px-3 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">商品名稱 (採購標準)</th>
                                 <th scope="col" class="px-3 py-3 text-right font-medium text-gray-500 uppercase tracking-wider">採購總數(A)</th>
-                                <th scope="col" class="px-3 py-3 text-right font-medium text-gray-500 uppercase tracking-wider">前台銷售數</th>
+                                <th scope="col" class="px-3 py-3 text-right font-medium text-gray-500 uppercase tracking-wider">前台銷售總數</th>
                                 <th scope="col" class="px-3 py-3 text-right font-medium text-blue-600 uppercase tracking-wider" title="銷售數 * 換算率">換算後扣除數(B)</th>
                                 <th scope="col" class="px-3 py-3 text-right font-medium text-gray-500 uppercase tracking-wider" title="預設為1，可點擊修改">換算率</th>
                                 <th scope="col" class="px-3 py-3 text-right font-bold text-gray-800 uppercase tracking-wider bg-yellow-50">理論庫存(A-B)</th>
@@ -137,31 +137,41 @@
 
             const reader = new FileReader();
             reader.onload = function(e) {
-                const data = new Uint8Array(e.target.result);
-                const workbook = XLSX.read(data, {type: 'array'});
-                // 假設資料都在第一個工作表
-                const firstSheetName = workbook.SheetNames[0];
-                const worksheet = workbook.Sheets[firstSheetName];
-                
-                // 將 Sheet 轉換為 JSON 陣列 (header: 1 表示將第一行作為陣列標題，方便我們手動處理複雜表頭)
-                const jsonData = XLSX.utils.sheet_to_json(worksheet, {header: 1});
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    // 假設資料都在第一個工作表
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    
+                    // 將 Sheet 轉換為 JSON 陣列 (header: 1 表示將第一行作為陣列標題，方便我們手動處理複雜表頭)
+                    const jsonData = XLSX.utils.sheet_to_json(worksheet, {header: 1});
 
-                if (type === 'purchase') {
-                    purchaseData = parsePurchaseData(jsonData);
-                    showMessage(`已讀取採購表: 共 ${purchaseData.length} 筆資料`, 'text-blue-600');
-                } else {
-                    salesData = parseSalesData(jsonData);
-                    showMessage(`已讀取銷售表: 共 ${salesData.length} 筆資料`, 'text-blue-600');
+                    if (type === 'purchase') {
+                        purchaseData = parsePurchaseData(jsonData);
+                        if(purchaseData.length === 0) throw new Error("在採購表中找不到有效的品名與數量");
+                        showMessage(`已讀取採購表: 共 ${purchaseData.length} 筆有效資料`, 'text-blue-600');
+                    } else {
+                        salesData = parseSalesData(jsonData);
+                        if(salesData.length === 0) throw new Error("在銷售表中找不到有效的品名與數量");
+                        showMessage(`已讀取銷售表: 共 ${salesData.length} 筆有效資料`, 'text-blue-600');
+                    }
+
+                    checkReadyToProcess();
+                } catch (error) {
+                    showMessage(`讀取失敗: ${error.message}，請檢查表格格式`, 'text-red-600');
+                    if (type === 'purchase') purchaseData = [];
+                    if (type === 'sales') salesData = [];
                 }
-
-                checkReadyToProcess();
             };
             reader.readAsArrayBuffer(file);
         }
 
         function showMessage(msg, colorClass) {
             statusMessage.textContent = msg;
-            statusMessage.className = `text-sm font-medium ${colorClass}`;
+            // 重置所有顏色類別
+            statusMessage.className = 'text-sm font-medium';
+            statusMessage.classList.add(colorClass);
         }
 
         function checkReadyToProcess() {
@@ -169,149 +179,212 @@
                 processBtn.disabled = false;
                 processBtn.classList.remove('opacity-50', 'cursor-not-allowed');
                 showMessage('檔案已就緒，請點擊「開始比對計算」', 'text-green-600');
+            } else {
+                processBtn.disabled = true;
+                processBtn.classList.add('opacity-50', 'cursor-not-allowed');
             }
         }
 
-        /* 
-           注意：由於提供的圖片是截圖且字體較小，以下解析邏輯是基於常見庫存表結構的推測。
-           實際使用時，您可能需要根據您 Excel 檔案中「真實的欄位名稱」或「欄位索引(0, 1, 2...)」來修改這裡的邏輯。
-        */
+        function fuzzyMatch(name1, name2) {
+            if (!name1 || !name2) return false;
+            // 移除空白、括號、減號等各種符號，並轉小寫，消除全半形差異
+            const normalize = (str) => String(str).replace(/[\s\(\)\[\]\{\}\-\_（）「」【】]/g, '').toLowerCase();
+            const n1 = normalize(name1);
+            const n2 = normalize(name2);
+            
+            if (n1 === n2) return true;
+            // 只要其中一方包含另一方，即視為匹配 (例如: "拿鐵" 包含於 "熱拿鐵(大)")
+            if (n1.includes(n2) || n2.includes(n1)) return true;
+            
+            return false;
+        }
 
-        function parsePurchaseData(rawData) {
-            // 假設採購表結構：陣列中尋找類似 [代碼, 名稱, 數量...] 的資料行
+        function parseExcelData(rawData, type) {
             let parsed = [];
-            // 尋找表頭所在的列 (通常含有 '代碼' 或 '品名')
             let headerRowIndex = -1;
-            for(let i=0; i<Math.min(20, rawData.length); i++) {
-                if(rawData[i].some(cell => typeof cell === 'string' && (cell.includes('代碼') || cell.includes('品名') || cell.includes('料號')))) {
+            let nameIdx = -1, qtyIdx = -1, codeIdx = -1;
+
+            // 1. 動態尋找表頭與欄位位置 (掃描前 20 行)
+            for (let i = 0; i < Math.min(20, rawData.length); i++) {
+                const row = rawData[i];
+                if (!Array.isArray(row)) continue;
+                
+                for (let j = 0; j < row.length; j++) {
+                    const cell = String(row[j] || '').trim();
+                    const cellLower = cell.toLowerCase();
+                    
+                    // 尋找品名欄位
+                    if (cellLower.includes('品名') || cellLower.includes('商品') || cellLower.includes('名稱') || cellLower.includes('項目')) {
+                        nameIdx = j;
+                    }
+                    
+                    // 尋找數量欄位 (區分採購與銷售的關鍵字，盡量放寬條件)
+                    if (type === 'purchase' && (cellLower.includes('數量') || cellLower.includes('總數') || cellLower.includes('進貨') || cellLower.includes('合計'))) {
+                        qtyIdx = j;
+                    }
+                    if (type === 'sales' && (cell.includes('銷售數量') || cell === '數量' || cellLower.includes('銷量') || cellLower.includes('賣出') || cellLower.includes('總計'))) {
+                        qtyIdx = j;
+                    }
+                    
+                    // 尋找代碼 (非必要，有最好)
+                    if (cellLower.includes('代碼') || cellLower.includes('料號') || cellLower.includes('條碼') || cellLower.includes('編號')) {
+                        codeIdx = j;
+                    }
+                }
+
+                // 若同時找到品名跟數量，認定此行為表頭
+                if (nameIdx !== -1 && qtyIdx !== -1) {
                     headerRowIndex = i;
                     break;
                 }
             }
 
-            if(headerRowIndex === -1) headerRowIndex = 0; // 找不到明顯表頭就從第一行開始猜
+            // 若找不到，給予預設猜測值 (應對格式非常不標準的情況)
+            if (headerRowIndex === -1) {
+                headerRowIndex = 0;
+                nameIdx = type === 'purchase' ? 1 : 2; 
+                qtyIdx = type === 'purchase' ? 2 : 4;
+            }
 
-            // 假設：欄位0 是代碼，欄位1 是名稱，欄位X 是數量
-            // 由於圖一很長，推測是標準的進銷存明細
+            // 2. 擷取資料
             for (let i = headerRowIndex + 1; i < rawData.length; i++) {
                 const row = rawData[i];
-                if (!row || row.length < 2) continue; // 跳過空行
-                
-                // 這裡強烈依賴實際檔案格式。假設：索引0=代碼, 索引1=品名, 索引2(或某個特定欄位)=進貨數量
-                // 如果實際 Excel 中，進貨數量在第 5 欄 (索引4)，請將下方的 2 改為 4。
-                const code = String(row[0] || '').trim();
-                const name = String(row[1] || '').trim();
-                const qty = parseFloat(row[2]) || 0; // 暫時假設數量在第3欄
+                if (!row || row.length === 0) continue;
 
-                if (code) { // 以有代碼為有效資料的基準
-                    parsed.push({ code, name, purchaseQty: qty });
+                let name = String(row[nameIdx] || '').trim();
+                // 過濾掉小計、總計等無效行
+                if (!name || name.includes('小計') || name.includes('總計') || name.includes('分類小計') || name.includes('合計')) continue; 
+
+                // 銷售表有時品名會被向右或向左推擠，試著鄰近找找看
+                if(type === 'sales' && !name && row[nameIdx-1]) {
+                     name = String(row[nameIdx-1] || '').trim();
+                }
+
+                const code = codeIdx !== -1 ? String(row[codeIdx] || '').trim() : '';
+                // 嘗試將數量轉為數字，排除非數字的雜訊
+                let qtyRaw = row[qtyIdx];
+                if (typeof qtyRaw === 'string') qtyRaw = qtyRaw.replace(/,/g, ''); // 移除千分位逗號
+                const qty = parseFloat(qtyRaw) || 0;
+
+                if (name && qty !== 0) { // 只加入有品名且數量不為 0 的項目 (或可依需求改為允許0)
+                    if (type === 'purchase') {
+                        parsed.push({ code, name, purchaseQty: qty });
+                    } else {
+                        parsed.push({ code, name, salesQty: qty });
+                    }
                 }
             }
             return parsed;
+        }
+
+        function parsePurchaseData(rawData) {
+            return parseExcelData(rawData, 'purchase');
         }
 
         function parseSalesData(rawData) {
-            // 銷售表 (圖二) 看起來比較複雜，有分類小計等。
-            let parsed = [];
-            // 尋找表頭
-            let headerRowIndex = -1;
-            for(let i=0; i<Math.min(20, rawData.length); i++) {
-                if(rawData[i].some(cell => typeof cell === 'string' && (cell.includes('代碼') || cell.includes('商品名稱')))) {
-                    headerRowIndex = i;
-                    break;
-                }
-            }
-            if(headerRowIndex === -1) headerRowIndex = 0;
-
-            for (let i = headerRowIndex + 1; i < rawData.length; i++) {
-                const row = rawData[i];
-                if (!row || row.length < 2) continue;
-                
-                // 過濾掉小計行 (通常包含 '小計' 或沒有代碼)
-                if (String(row[0]).includes('小計') || String(row[1]).includes('小計')) continue;
-
-                // 假設：索引1=代碼 (圖二看來代碼在第二欄?), 索引2=名稱, 某欄是銷售數量
-                // 從圖二觀察，代碼似乎在第2欄(索引1)，品名在第3欄(索引2)。
-                // "銷售數量" 的欄位需要根據實際檔案決定，這裡暫時假設是索引 4 (第5欄)
-                
-                let code = String(row[1] || '').trim(); 
-                if(!code) code = String(row[0] || '').trim(); // 如果第二欄沒東西，找第一欄
-
-                const name = String(row[2] || row[1] || '').trim();
-                const soldQty = parseFloat(row[4]) || parseFloat(row[3]) || 0; // 嘗試找數量
-
-                if (code && !code.includes('分類')) {
-                    parsed.push({ code, name, salesQty: soldQty });
-                }
-            }
-            return parsed;
+            return parseExcelData(rawData, 'sales');
         }
 
         function processData() {
-            showMessage('計算中...', 'text-blue-600');
+            showMessage('計算中 (模糊比對品名)...', 'text-blue-600');
             mergedData = [];
             
-            // 建立一個以代碼為 key 的字典方便比對
-            const purchaseDict = {};
+            // 1. 整理採購資料 (以品名為基準加總，避免採購表本身有重複品項)
+            const purchaseDict = {}; 
             purchaseData.forEach(item => {
-                // 如果同代碼有多筆採購，將數量加總
-                if(purchaseDict[item.code]) {
-                    purchaseDict[item.code].purchaseQty += item.purchaseQty;
+                const pName = item.name;
+                if(purchaseDict[pName]) {
+                    purchaseDict[pName].purchaseQty += item.purchaseQty;
                 } else {
-                    purchaseDict[item.code] = { ...item };
+                    purchaseDict[pName] = { ...item, matchedSales: [] };
                 }
             });
 
-            const salesDict = {};
+            const purchaseKeys = Object.keys(purchaseDict);
+
+            // 2. 整理銷售資料並進行模糊比對
+            const unmatchedSales = {};
             salesData.forEach(item => {
-                if(salesDict[item.code]) {
-                    salesDict[item.code].salesQty += item.salesQty;
+                const sName = item.name;
+                let matchedPName = null;
+
+                // 尋找最佳匹配的採購品名
+                for (let pName of purchaseKeys) {
+                    if (fuzzyMatch(pName, sName)) {
+                        matchedPName = pName;
+                        break; // 找到第一個符合的就停止 (若有更複雜的對應可在此修改邏輯)
+                    }
+                }
+
+                if (matchedPName) {
+                    // 若比對成功，將銷售紀錄塞入該採購品項的陣列中
+                    purchaseDict[matchedPName].matchedSales.push(item);
                 } else {
-                    salesDict[item.code] = { ...item };
+                    // 如果銷售表中的商品在採購表完全找不到近似的 (可能為舊庫存銷售，未在本次採購單中)
+                    if (unmatchedSales[sName]) {
+                        unmatchedSales[sName].salesQty += item.salesQty;
+                    } else {
+                        unmatchedSales[sName] = { ...item };
+                    }
                 }
             });
 
-            // 取得所有出現過的代碼聯集
-            const allCodes = new Set([...Object.keys(purchaseDict), ...Object.keys(salesDict)]);
+            // 3. 建立最終合併陣列
+            Object.values(purchaseDict).forEach(pItem => {
+                let totalSalesQty = 0;
+                // 將所有匹配到的前台銷售數量加總
+                pItem.matchedSales.forEach(sItem => {
+                    totalSalesQty += sItem.salesQty;
+                });
 
-            allCodes.forEach(code => {
-                const pItem = purchaseDict[code] || { name: '', purchaseQty: 0 };
-                const sItem = salesDict[code] || { name: '', salesQty: 0 };
-                
-                // 優先使用採購表的名稱，若無則用銷售表的名稱
-                const name = pItem.name || sItem.name;
-                
-                // 初始化換算率為 1
-                if(conversionRates[code] === undefined) {
-                    conversionRates[code] = 1; 
+                const uniqueKey = pItem.name; // 用品名作為換算率的 key
+                if(conversionRates[uniqueKey] === undefined) {
+                    conversionRates[uniqueKey] = 1; 
                 }
 
                 mergedData.push({
-                    code: code,
-                    name: name,
+                    uniqueKey: uniqueKey,
+                    code: pItem.code,
+                    name: pItem.name,
                     purchaseQty: pItem.purchaseQty,
-                    rawSalesQty: sItem.salesQty,
-                    actualInventory: '' // 現場盤點數量初始為空
+                    rawSalesQty: totalSalesQty,
+                    actualInventory: '' 
                 });
             });
 
-            // 依代碼排序
-            mergedData.sort((a, b) => a.code.localeCompare(b.code));
+            // 處理只有銷售沒有採購的異常品項 (這類商品沒有採購基數，算出的理論庫存會是負數)
+            Object.values(unmatchedSales).forEach(sItem => {
+                const uniqueKey = sItem.name;
+                if(conversionRates[uniqueKey] === undefined) {
+                    conversionRates[uniqueKey] = 1; 
+                }
+
+                mergedData.push({
+                    uniqueKey: uniqueKey,
+                    code: sItem.code,
+                    name: sItem.name + ' (未找到採購)',
+                    purchaseQty: 0, 
+                    rawSalesQty: sItem.salesQty,
+                    actualInventory: ''
+                });
+            });
+
+            // 依品名排序，方便查看
+            mergedData.sort((a, b) => a.name.localeCompare(b.name));
 
             renderTable();
             
             resultSection.classList.remove('hidden');
             exportBtn.classList.remove('hidden');
-            showMessage('計算完成！請在表格中填寫實際盤點數量。', 'text-green-600');
+            showMessage('計算完成！已根據「品名」完成模糊比對與加總。', 'text-green-600');
         }
 
         function renderTable() {
             resultBody.innerHTML = '';
             
             mergedData.forEach((item, index) => {
-                const rate = conversionRates[item.code];
+                const rate = conversionRates[item.uniqueKey];
                 const convertedSales = (item.rawSalesQty * rate).toFixed(2);
-                // 理論庫存 = 採購 - (銷售 * 換算率)
                 const theoreticalQty = (item.purchaseQty - convertedSales).toFixed(2);
                 
                 let diff = '';
@@ -325,16 +398,19 @@
                 const tr = document.createElement('tr');
                 tr.className = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
                 
+                // 特別標示那些沒有採購的項目
+                const nameDisplayClass = item.name.includes('(未找到採購)') ? 'text-red-500 font-medium' : 'text-gray-900 font-medium';
+
                 tr.innerHTML = `
-                    <td class="px-3 py-2 whitespace-nowrap">${item.code}</td>
-                    <td class="px-3 py-2 text-gray-900 w-64 truncate" title="${item.name}">${item.name}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-gray-500">${item.code || '-'}</td>
+                    <td class="px-3 py-2 ${nameDisplayClass} w-64 truncate" title="${item.name}">${item.name}</td>
                     <td class="px-3 py-2 text-right">${item.purchaseQty}</td>
                     <td class="px-3 py-2 text-right">${item.rawSalesQty}</td>
                     <td class="px-3 py-2 text-right font-medium text-blue-600">${parseFloat(convertedSales)}</td>
                     <td class="px-3 py-2 text-right">
                         <input type="number" step="0.01" min="0.01" 
                             class="w-16 p-1 border rounded text-right focus:outline-none focus:ring focus:border-blue-300 rate-input" 
-                            data-code="${item.code}" value="${rate}">
+                            data-key="${item.uniqueKey}" value="${rate}">
                     </td>
                     <td class="px-3 py-2 text-right font-bold bg-yellow-50">${parseFloat(theoreticalQty)}</td>
                     <td class="px-3 py-2 text-center bg-green-50">
@@ -347,37 +423,33 @@
                 resultBody.appendChild(tr);
             });
 
-            // 綁定換算率和實際庫存輸入事件
             bindInputEvents();
         }
 
         function bindInputEvents() {
-            // 換算率更改
+            // 換算率修改事件
             document.querySelectorAll('.rate-input').forEach(input => {
                 input.addEventListener('change', (e) => {
-                    const code = e.target.getAttribute('data-code');
+                    const key = e.target.getAttribute('data-key');
                     const newRate = parseFloat(e.target.value) || 1;
-                    conversionRates[code] = newRate;
-                    // 重新渲染以更新計算結果
-                    renderTable();
+                    conversionRates[key] = newRate;
+                    renderTable(); // 重新渲染表格以更新計算
                 });
             });
 
-            // 現場盤點數量更改
+            // 現場盤點輸入事件
             document.querySelectorAll('.actual-input').forEach(input => {
                 input.addEventListener('input', (e) => {
                     const index = parseInt(e.target.getAttribute('data-index'));
                     mergedData[index].actualInventory = e.target.value;
-                    
-                    // 局部更新差異欄位，避免整張表重繪導致失焦
-                    updateDiffCell(index, e.target);
+                    updateDiffCell(index, e.target); // 僅更新差異欄位以提高效能
                 });
             });
         }
 
         function updateDiffCell(index, inputElement) {
             const item = mergedData[index];
-            const rate = conversionRates[item.code];
+            const rate = conversionRates[item.uniqueKey];
             const convertedSales = item.rawSalesQty * rate;
             const theoreticalQty = item.purchaseQty - convertedSales;
             
@@ -385,23 +457,23 @@
             
             if (item.actualInventory !== '') {
                 const diffValue = (parseFloat(item.actualInventory) - theoreticalQty).toFixed(2);
-                diffCell.textContent = parseFloat(diffValue); // 去除多餘的 .00
+                diffCell.textContent = parseFloat(diffValue); 
                 diffCell.className = `px-3 py-2 text-right ${diffValue < 0 ? 'text-red-600 font-bold' : (diffValue > 0 ? 'text-blue-600 font-bold' : 'text-green-600')}`;
             } else {
                 diffCell.textContent = '';
+                diffCell.className = 'px-3 py-2 text-right';
             }
         }
 
         function exportToExcel() {
             showMessage('正在準備匯出...', 'text-blue-600');
             
-            // 準備匯出的資料陣列 (包含表頭)
             const exportData = [
                 ['代碼/料號', '商品名稱', '採購總數(A)', '前台銷售數', '換算率', '換算後銷售數(B)', '理論庫存(A-B)', '現場盤點數量(C)', '差異(C - 理論)']
             ];
 
             mergedData.forEach(item => {
-                const rate = conversionRates[item.code];
+                const rate = conversionRates[item.uniqueKey];
                 const convertedSales = item.rawSalesQty * rate;
                 const theoreticalQty = item.purchaseQty - convertedSales;
                 let diff = '';
@@ -422,32 +494,22 @@
                 ]);
             });
 
-            // 建立 WorkBook
             const ws = XLSX.utils.aoa_to_sheet(exportData);
             
             // 設定欄寬
             const wscols = [
-                {wch: 15}, // 代碼
-                {wch: 35}, // 名稱
-                {wch: 12}, // 採購數
-                {wch: 12}, // 銷售數
-                {wch: 10}, // 換算率
-                {wch: 15}, // 換算後
-                {wch: 15}, // 理論庫存
-                {wch: 18}, // 盤點數
-                {wch: 15}  // 差異
+                {wch: 15}, {wch: 35}, {wch: 12}, {wch: 12}, {wch: 10}, 
+                {wch: 15}, {wch: 15}, {wch: 18}, {wch: 15}
             ];
             ws['!cols'] = wscols;
 
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, "盤點比對結果");
 
-            // 產生檔名 (加入日期)
             const today = new Date();
             const dateString = `${today.getFullYear()}${(today.getMonth()+1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}`;
             const fileName = `庫存盤點比對表_${dateString}.xlsx`;
 
-            // 下載檔案
             XLSX.writeFile(wb, fileName);
             showMessage('匯出成功！', 'text-green-600');
         }
