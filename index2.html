@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>庫存換算與比對系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- SheetJS 用於讀取和寫入 Excel 檔案 -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .table-container { max-height: 60vh; overflow-y: auto; }
+        th { position: sticky; top: 0; background-color: #f9fafb; z-index: 10; }
+        /* 自訂滾動條樣式 */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+    </style>
+</head>
+<body class="p-6 text-gray-800">
+
+    <div class="max-w-7xl mx-auto bg-white rounded-xl shadow-md overflow-hidden">
+        <div class="bg-blue-600 p-4 text-white text-center">
+            <h1 class="text-2xl font-bold">庫存換算與盤點比對系統</h1>
+            <p class="text-sm mt-1">上傳採購表與前台銷售表，自動計算理論庫存並供現場核對</p>
+        </div>
+
+        <div class="p-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <!-- 採購總表上傳 -->
+                <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition">
+                    <label for="purchaseFile" class="cursor-pointer block">
+                        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <span class="mt-2 block text-sm font-medium text-gray-900">
+                            上傳 採購總表 (圖一)
+                        </span>
+                        <span id="purchaseFileName" class="mt-1 block text-sm text-gray-500">尚未選擇檔案</span>
+                    </label>
+                    <input type="file" id="purchaseFile" accept=".xlsx, .xls, .csv" class="hidden">
+                </div>
+
+                <!-- 銷售表上傳 -->
+                <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition">
+                    <label for="salesFile" class="cursor-pointer block">
+                        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                        </svg>
+                        <span class="mt-2 block text-sm font-medium text-gray-900">
+                            上傳 前台銷售表 (圖二)
+                        </span>
+                        <span id="salesFileName" class="mt-1 block text-sm text-gray-500">尚未選擇檔案</span>
+                    </label>
+                    <input type="file" id="salesFile" accept=".xlsx, .xls, .csv" class="hidden">
+                </div>
+            </div>
+
+            <div class="flex justify-between items-center mb-6 border-b pb-4">
+                <div>
+                    <button id="processBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded shadow opacity-50 cursor-not-allowed transition" disabled>
+                        開始比對計算
+                    </button>
+                    <button id="exportBtn" class="ml-4 bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-6 rounded shadow hidden transition">
+                        匯出核對報表 (Excel)
+                    </button>
+                </div>
+                <div id="statusMessage" class="text-sm font-medium text-gray-600">
+                    請先上傳兩個檔案
+                </div>
+            </div>
+
+            <div id="resultSection" class="hidden">
+                <div class="mb-2 flex justify-between items-end">
+                    <h2 class="text-lg font-bold text-gray-700">比對結果與現場核對</h2>
+                    <p class="text-xs text-red-500">* 請在「現場盤點數量」欄位輸入實際數量以計算差異</p>
+                </div>
+                
+                <div class="table-container border rounded-lg shadow-inner">
+                    <table class="min-w-full divide-y divide-gray-200 text-sm" id="resultTable">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th scope="col" class="px-3 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">代碼/料號</th>
+                                <th scope="col" class="px-3 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">商品名稱</th>
+                                <th scope="col" class="px-3 py-3 text-right font-medium text-gray-500 uppercase tracking-wider">採購總數(A)</th>
+                                <th scope="col" class="px-3 py-3 text-right font-medium text-gray-500 uppercase tracking-wider">前台銷售數</th>
+                                <th scope="col" class="px-3 py-3 text-right font-medium text-blue-600 uppercase tracking-wider" title="銷售數 * 換算率">換算後扣除數(B)</th>
+                                <th scope="col" class="px-3 py-3 text-right font-medium text-gray-500 uppercase tracking-wider" title="預設為1，可點擊修改">換算率</th>
+                                <th scope="col" class="px-3 py-3 text-right font-bold text-gray-800 uppercase tracking-wider bg-yellow-50">理論庫存(A-B)</th>
+                                <th scope="col" class="px-3 py-3 text-center font-bold text-green-600 uppercase tracking-wider bg-green-50">現場盤點數量(C)</th>
+                                <th scope="col" class="px-3 py-3 text-right font-bold text-red-600 uppercase tracking-wider">差異(C - 理論)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200" id="resultBody">
+                            <!-- 資料將由 JavaScript 動態填入 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        let purchaseData = [];
+        let salesData = [];
+        let mergedData = [];
+        // 儲存商品代碼對應的換算率，預設為 1
+        let conversionRates = {}; 
+
+        const purchaseFileInput = document.getElementById('purchaseFile');
+        const salesFileInput = document.getElementById('salesFile');
+        const processBtn = document.getElementById('processBtn');
+        const exportBtn = document.getElementById('exportBtn');
+        const statusMessage = document.getElementById('statusMessage');
+        const resultSection = document.getElementById('resultSection');
+        const resultBody = document.getElementById('resultBody');
+
+        // 監聽檔案上傳
+        purchaseFileInput.addEventListener('change', (e) => handleFileUpload(e, 'purchase'));
+        salesFileInput.addEventListener('change', (e) => handleFileUpload(e, 'sales'));
+        
+        // 監聽按鈕點擊
+        processBtn.addEventListener('click', processData);
+        exportBtn.addEventListener('click', exportToExcel);
+
+        function handleFileUpload(event, type) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            // 更新檔名顯示
+            const nameElement = document.getElementById(`${type}FileName`);
+            nameElement.textContent = file.name;
+            nameElement.classList.remove('text-gray-500');
+            nameElement.classList.add('text-blue-600', 'font-semibold');
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, {type: 'array'});
+                // 假設資料都在第一個工作表
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                
+                // 將 Sheet 轉換為 JSON 陣列 (header: 1 表示將第一行作為陣列標題，方便我們手動處理複雜表頭)
+                const jsonData = XLSX.utils.sheet_to_json(worksheet, {header: 1});
+
+                if (type === 'purchase') {
+                    purchaseData = parsePurchaseData(jsonData);
+                    showMessage(`已讀取採購表: 共 ${purchaseData.length} 筆資料`, 'text-blue-600');
+                } else {
+                    salesData = parseSalesData(jsonData);
+                    showMessage(`已讀取銷售表: 共 ${salesData.length} 筆資料`, 'text-blue-600');
+                }
+
+                checkReadyToProcess();
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function showMessage(msg, colorClass) {
+            statusMessage.textContent = msg;
+            statusMessage.className = `text-sm font-medium ${colorClass}`;
+        }
+
+        function checkReadyToProcess() {
+            if (purchaseData.length > 0 && salesData.length > 0) {
+                processBtn.disabled = false;
+                processBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                showMessage('檔案已就緒，請點擊「開始比對計算」', 'text-green-600');
+            }
+        }
+
+        /* 
+           注意：由於提供的圖片是截圖且字體較小，以下解析邏輯是基於常見庫存表結構的推測。
+           實際使用時，您可能需要根據您 Excel 檔案中「真實的欄位名稱」或「欄位索引(0, 1, 2...)」來修改這裡的邏輯。
+        */
+
+        function parsePurchaseData(rawData) {
+            // 假設採購表結構：陣列中尋找類似 [代碼, 名稱, 數量...] 的資料行
+            let parsed = [];
+            // 尋找表頭所在的列 (通常含有 '代碼' 或 '品名')
+            let headerRowIndex = -1;
+            for(let i=0; i<Math.min(20, rawData.length); i++) {
+                if(rawData[i].some(cell => typeof cell === 'string' && (cell.includes('代碼') || cell.includes('品名') || cell.includes('料號')))) {
+                    headerRowIndex = i;
+                    break;
+                }
+            }
+
+            if(headerRowIndex === -1) headerRowIndex = 0; // 找不到明顯表頭就從第一行開始猜
+
+            // 假設：欄位0 是代碼，欄位1 是名稱，欄位X 是數量
+            // 由於圖一很長，推測是標準的進銷存明細
+            for (let i = headerRowIndex + 1; i < rawData.length; i++) {
+                const row = rawData[i];
+                if (!row || row.length < 2) continue; // 跳過空行
+                
+                // 這裡強烈依賴實際檔案格式。假設：索引0=代碼, 索引1=品名, 索引2(或某個特定欄位)=進貨數量
+                // 如果實際 Excel 中，進貨數量在第 5 欄 (索引4)，請將下方的 2 改為 4。
+                const code = String(row[0] || '').trim();
+                const name = String(row[1] || '').trim();
+                const qty = parseFloat(row[2]) || 0; // 暫時假設數量在第3欄
+
+                if (code) { // 以有代碼為有效資料的基準
+                    parsed.push({ code, name, purchaseQty: qty });
+                }
+            }
+            return parsed;
+        }
+
+        function parseSalesData(rawData) {
+            // 銷售表 (圖二) 看起來比較複雜，有分類小計等。
+            let parsed = [];
+            // 尋找表頭
+            let headerRowIndex = -1;
+            for(let i=0; i<Math.min(20, rawData.length); i++) {
+                if(rawData[i].some(cell => typeof cell === 'string' && (cell.includes('代碼') || cell.includes('商品名稱')))) {
+                    headerRowIndex = i;
+                    break;
+                }
+            }
+            if(headerRowIndex === -1) headerRowIndex = 0;
+
+            for (let i = headerRowIndex + 1; i < rawData.length; i++) {
+                const row = rawData[i];
+                if (!row || row.length < 2) continue;
+                
+                // 過濾掉小計行 (通常包含 '小計' 或沒有代碼)
+                if (String(row[0]).includes('小計') || String(row[1]).includes('小計')) continue;
+
+                // 假設：索引1=代碼 (圖二看來代碼在第二欄?), 索引2=名稱, 某欄是銷售數量
+                // 從圖二觀察，代碼似乎在第2欄(索引1)，品名在第3欄(索引2)。
+                // "銷售數量" 的欄位需要根據實際檔案決定，這裡暫時假設是索引 4 (第5欄)
+                
+                let code = String(row[1] || '').trim(); 
+                if(!code) code = String(row[0] || '').trim(); // 如果第二欄沒東西，找第一欄
+
+                const name = String(row[2] || row[1] || '').trim();
+                const soldQty = parseFloat(row[4]) || parseFloat(row[3]) || 0; // 嘗試找數量
+
+                if (code && !code.includes('分類')) {
+                    parsed.push({ code, name, salesQty: soldQty });
+                }
+            }
+            return parsed;
+        }
+
+        function processData() {
+            showMessage('計算中...', 'text-blue-600');
+            mergedData = [];
+            
+            // 建立一個以代碼為 key 的字典方便比對
+            const purchaseDict = {};
+            purchaseData.forEach(item => {
+                // 如果同代碼有多筆採購，將數量加總
+                if(purchaseDict[item.code]) {
+                    purchaseDict[item.code].purchaseQty += item.purchaseQty;
+                } else {
+                    purchaseDict[item.code] = { ...item };
+                }
+            });
+
+            const salesDict = {};
+            salesData.forEach(item => {
+                if(salesDict[item.code]) {
+                    salesDict[item.code].salesQty += item.salesQty;
+                } else {
+                    salesDict[item.code] = { ...item };
+                }
+            });
+
+            // 取得所有出現過的代碼聯集
+            const allCodes = new Set([...Object.keys(purchaseDict), ...Object.keys(salesDict)]);
+
+            allCodes.forEach(code => {
+                const pItem = purchaseDict[code] || { name: '', purchaseQty: 0 };
+                const sItem = salesDict[code] || { name: '', salesQty: 0 };
+                
+                // 優先使用採購表的名稱，若無則用銷售表的名稱
+                const name = pItem.name || sItem.name;
+                
+                // 初始化換算率為 1
+                if(conversionRates[code] === undefined) {
+                    conversionRates[code] = 1; 
+                }
+
+                mergedData.push({
+                    code: code,
+                    name: name,
+                    purchaseQty: pItem.purchaseQty,
+                    rawSalesQty: sItem.salesQty,
+                    actualInventory: '' // 現場盤點數量初始為空
+                });
+            });
+
+            // 依代碼排序
+            mergedData.sort((a, b) => a.code.localeCompare(b.code));
+
+            renderTable();
+            
+            resultSection.classList.remove('hidden');
+            exportBtn.classList.remove('hidden');
+            showMessage('計算完成！請在表格中填寫實際盤點數量。', 'text-green-600');
+        }
+
+        function renderTable() {
+            resultBody.innerHTML = '';
+            
+            mergedData.forEach((item, index) => {
+                const rate = conversionRates[item.code];
+                const convertedSales = (item.rawSalesQty * rate).toFixed(2);
+                // 理論庫存 = 採購 - (銷售 * 換算率)
+                const theoreticalQty = (item.purchaseQty - convertedSales).toFixed(2);
+                
+                let diff = '';
+                let diffClass = '';
+                if (item.actualInventory !== '') {
+                    const diffValue = (parseFloat(item.actualInventory) - parseFloat(theoreticalQty)).toFixed(2);
+                    diff = diffValue;
+                    diffClass = diffValue < 0 ? 'text-red-600 font-bold' : (diffValue > 0 ? 'text-blue-600 font-bold' : 'text-green-600');
+                }
+
+                const tr = document.createElement('tr');
+                tr.className = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+                
+                tr.innerHTML = `
+                    <td class="px-3 py-2 whitespace-nowrap">${item.code}</td>
+                    <td class="px-3 py-2 text-gray-900 w-64 truncate" title="${item.name}">${item.name}</td>
+                    <td class="px-3 py-2 text-right">${item.purchaseQty}</td>
+                    <td class="px-3 py-2 text-right">${item.rawSalesQty}</td>
+                    <td class="px-3 py-2 text-right font-medium text-blue-600">${parseFloat(convertedSales)}</td>
+                    <td class="px-3 py-2 text-right">
+                        <input type="number" step="0.01" min="0.01" 
+                            class="w-16 p-1 border rounded text-right focus:outline-none focus:ring focus:border-blue-300 rate-input" 
+                            data-code="${item.code}" value="${rate}">
+                    </td>
+                    <td class="px-3 py-2 text-right font-bold bg-yellow-50">${parseFloat(theoreticalQty)}</td>
+                    <td class="px-3 py-2 text-center bg-green-50">
+                        <input type="number" step="0.5" 
+                            class="w-20 p-1 border rounded border-green-300 text-center focus:outline-none focus:ring focus:border-green-500 actual-input" 
+                            data-index="${index}" value="${item.actualInventory}">
+                    </td>
+                    <td class="px-3 py-2 text-right ${diffClass}">${diff}</td>
+                `;
+                resultBody.appendChild(tr);
+            });
+
+            // 綁定換算率和實際庫存輸入事件
+            bindInputEvents();
+        }
+
+        function bindInputEvents() {
+            // 換算率更改
+            document.querySelectorAll('.rate-input').forEach(input => {
+                input.addEventListener('change', (e) => {
+                    const code = e.target.getAttribute('data-code');
+                    const newRate = parseFloat(e.target.value) || 1;
+                    conversionRates[code] = newRate;
+                    // 重新渲染以更新計算結果
+                    renderTable();
+                });
+            });
+
+            // 現場盤點數量更改
+            document.querySelectorAll('.actual-input').forEach(input => {
+                input.addEventListener('input', (e) => {
+                    const index = parseInt(e.target.getAttribute('data-index'));
+                    mergedData[index].actualInventory = e.target.value;
+                    
+                    // 局部更新差異欄位，避免整張表重繪導致失焦
+                    updateDiffCell(index, e.target);
+                });
+            });
+        }
+
+        function updateDiffCell(index, inputElement) {
+            const item = mergedData[index];
+            const rate = conversionRates[item.code];
+            const convertedSales = item.rawSalesQty * rate;
+            const theoreticalQty = item.purchaseQty - convertedSales;
+            
+            const diffCell = inputElement.parentElement.nextElementSibling;
+            
+            if (item.actualInventory !== '') {
+                const diffValue = (parseFloat(item.actualInventory) - theoreticalQty).toFixed(2);
+                diffCell.textContent = parseFloat(diffValue); // 去除多餘的 .00
+                diffCell.className = `px-3 py-2 text-right ${diffValue < 0 ? 'text-red-600 font-bold' : (diffValue > 0 ? 'text-blue-600 font-bold' : 'text-green-600')}`;
+            } else {
+                diffCell.textContent = '';
+            }
+        }
+
+        function exportToExcel() {
+            showMessage('正在準備匯出...', 'text-blue-600');
+            
+            // 準備匯出的資料陣列 (包含表頭)
+            const exportData = [
+                ['代碼/料號', '商品名稱', '採購總數(A)', '前台銷售數', '換算率', '換算後銷售數(B)', '理論庫存(A-B)', '現場盤點數量(C)', '差異(C - 理論)']
+            ];
+
+            mergedData.forEach(item => {
+                const rate = conversionRates[item.code];
+                const convertedSales = item.rawSalesQty * rate;
+                const theoreticalQty = item.purchaseQty - convertedSales;
+                let diff = '';
+                if (item.actualInventory !== '') {
+                    diff = parseFloat(item.actualInventory) - theoreticalQty;
+                }
+
+                exportData.push([
+                    item.code,
+                    item.name,
+                    item.purchaseQty,
+                    item.rawSalesQty,
+                    rate,
+                    convertedSales,
+                    theoreticalQty,
+                    item.actualInventory !== '' ? parseFloat(item.actualInventory) : '',
+                    diff !== '' ? diff : ''
+                ]);
+            });
+
+            // 建立 WorkBook
+            const ws = XLSX.utils.aoa_to_sheet(exportData);
+            
+            // 設定欄寬
+            const wscols = [
+                {wch: 15}, // 代碼
+                {wch: 35}, // 名稱
+                {wch: 12}, // 採購數
+                {wch: 12}, // 銷售數
+                {wch: 10}, // 換算率
+                {wch: 15}, // 換算後
+                {wch: 15}, // 理論庫存
+                {wch: 18}, // 盤點數
+                {wch: 15}  // 差異
+            ];
+            ws['!cols'] = wscols;
+
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "盤點比對結果");
+
+            // 產生檔名 (加入日期)
+            const today = new Date();
+            const dateString = `${today.getFullYear()}${(today.getMonth()+1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}`;
+            const fileName = `庫存盤點比對表_${dateString}.xlsx`;
+
+            // 下載檔案
+            XLSX.writeFile(wb, fileName);
+            showMessage('匯出成功！', 'text-green-600');
+        }
+    </script>
+</body>
+</html>
